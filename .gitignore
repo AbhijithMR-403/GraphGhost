@@ -23,3 +23,6 @@ Thumbs.db
 .instagram_profile/
 
 # Add entries appropriate to your chosen language or framework.
+
+# Downloaded Reels and the saved Instagram login session.
+downloads/

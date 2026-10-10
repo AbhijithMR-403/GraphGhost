@@ -25,7 +25,7 @@ Prerequisites: Python 3.10+ and the Playwright Python package with Chromium inst
 
 ```bash
 python3 -m venv venv
-venv/bin/python -m pip install playwright
+venv/bin/python -m pip install -r requirements.txt
 venv/bin/python -m playwright install chromium
 ```
 
@@ -49,7 +49,91 @@ Or set the name through an environment variable:
 INSTAGRAM_GROUP="Example Group" venv/bin/python test.py
 ```
 
-The script opens Instagram, clicks the Messages icon, selects the matching group, moves to the top of the conversation, and scrolls downward. On every pass it checks message links for Reel URLs, deduplicates them, and rewrites the output file with the URLs found so far. It keeps the browser open until Enter is pressed. It reports an error when the saved session is no longer logged in or the group is absent from the current inbox. Use `--max-scrolls` to increase the scan limit for a large conversation.
+The script opens Instagram, clicks the Messages icon, selects the matching group, and scrolls up to the oldest message. It then walks down one screen at a time: on each screen it clicks every Reel message not yet handled, reads the `/reel/<code>/` URL from the address bar, goes back to the chat, and rewrites the output file after every Reel. When collection finishes the browser closes and every collected Reel is downloaded to `downloads/<code>.mp4` (change the folder with `--download-dir`, skip downloading with `--no-download`; videos that already exist are skipped). It reports an error when the saved session is no longer logged in or the group is absent from the current inbox. Use `--max-scrolls` to bound both the scroll to the oldest message and the walk down for a large conversation. The CLI also saves the Reels, their details and each video's relative path to Postgres when the database is reachable; otherwise it prints a warning and keeps the files only.
+
+### Download the Reels
+
+After `test.py` has written the URLs, download the videos with the same saved login profile:
+
+```sh
+venv/bin/python download_reels.py --input reel_urls.txt --output-dir downloads
+```
+
+Each Reel is saved as `downloads/<code>.mp4`; files that already exist are skipped. Add `--headed` to watch the browser. Close any other browser using `.instagram_profile` first. The script reads the video URL from the data the Reel page loads, so it needs the profile to be logged in; Instagram rejects unauthenticated requests.
+
+### API
+
+The same collection and download are available as a FastAPI app (`app/main.py`; scraping code in `app/scraper/`, Postgres store in `app/models/reels.py`, job queue in `app/workers/tasks.py`). Run it from the project root:
+
+```sh
+venv/bin/python -m uvicorn app.main:app --reload
+```
+
+Postgres must be running and the credentials must be in a `.env` file in the project root (ignored by Git). Copy the sanitized example and fill in your values:
+
+```sh
+cp .env.example .env
+```
+
+| Key | Meaning | Default if unset |
+| --- | --- | --- |
+| `POSTGRES_HOST` | Database host | `localhost` |
+| `POSTGRES_PORT` | Database port | `5432` |
+| `POSTGRES_DB` | Database name (create it first, e.g. `createdb graphghost`) | `graphghost` |
+| `POSTGRES_USER` | Database user | your OS user |
+| `POSTGRES_PASSWORD` | Database password | none |
+
+Transcription and analysis also need an OpenAI key in `.env`:
+
+| Key | Meaning | Default if unset |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | OpenAI API key (required for transcription) | none; the transcribe job fails with a clear message |
+| `OPENAI_TRANSCRIBE_MODEL` | Model for `/v1/audio/transcriptions` | `gpt-transcribe` |
+| `OPENAI_ANALYSIS_MODEL` | Model for `/v1/responses` | `gpt-6-luna` |
+
+Real environment variables take precedence over `.env`.
+
+Database changes are plain SQL files in `migrations/`, applied in name order and recorded in the `schema_migrations` table. The API applies pending ones at startup; to apply them by hand:
+
+```sh
+venv/bin/python -m app.models.migrate
+```
+
+To change the schema, add the next numbered file (never edit one that has already been applied), for example `migrations/0002_add_duration.sql`:
+
+```sql
+ALTER TABLE reels ADD COLUMN duration_seconds INTEGER;
+```
+
+Then run the command above (or restart the API). Each file runs in its own transaction, so a failing file changes nothing. There is no automatic rollback; write a new migration to undo a change.
+
+Requests return a `job_id` immediately. Jobs go on an in-process queue and run one at a time, because collecting and downloading share one logged-in browser profile.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `POST /collect` with `{"group": "Example Group"}` | Queue a collection. Optional `max_scrolls`, `headless`, `download` (default `true`: queue a download of new Reels when collection finishes) and `transcribe` (default `true`: transcribe and analyse them after the download). |
+| `POST /download` with `{}` or `{"urls": [...]}` | Queue a download of the given URLs, or of every collected Reel not downloaded yet. Files go to `downloads/<code>.mp4`. |
+| `POST /transcribe` | Queue transcription and analysis of downloaded Reels that have no transcript or analysis yet. |
+| `GET /jobs`, `GET /jobs/{job_id}` | `status` (`queued`, `running`, `done`, `failed`), progress in `results`, and any `error`. |
+| `GET /reels?downloaded=true\|false` | Every collected Reel with details. |
+| `GET /reels/{code}` | One Reel. Downloaded Reels carry `video_path` (relative to the project root, e.g. `downloads/<code>.mp4`) and `video_url` (`/downloads/<code>`). |
+| `GET /downloads`, `GET /downloads/{code}` | List downloaded files; stream one video, located through the `video_path` stored in the database. The code may be given with or without `.mp4`. |
+| `GET /health` | Liveness check. Interactive docs are at `/docs`. |
+
+Where data lives:
+
+- Postgres table `reels`: one row per Reel — `code`, `url`, `group_name`, `caption`, `author`, `author_name`, `posted_at` (Unix seconds), `likes`, `comments`, `video_path`, `collected_at`, `downloaded_at` (both timestamps with time zone). Collections accumulate: a Reel already stored is kept, not replaced.
+- `reel_urls.txt`: every collected URL, rewritten from the database after each collection.
+- `downloads/<code>.mp4`: the videos (ignored by Git).
+
+Each downloaded Reel is then transcribed (`reels.transcript`) and analysed. The model's JSON is stored in two tables:
+
+- `reel_analysis`: one row per Reel with `reel_summary`, `language`, `restaurant_name`, `food_items` and `highlights` (text arrays), `price_information` (JSONB), `sentiment`, `confidence`, `needs_verification`, `analyzed_at`.
+- `reel_locations`: one row per candidate location, any number per Reel, ordered by `position`: `location_name`, `full_address`, `locality`, `district`, `state`, `country`, `evidence`, `confidence`, `source`. Conflicting candidates stay separate rows.
+
+`GET /reels` and `GET /reels/{code}` return these assembled back into the model's original shape under `analysis` (with `addresses` as a list), or `null` when not analysed yet. Reels that already have a transcript and analysis are never sent to OpenAI again. Silent videos get an empty transcript and no analysis.
+
+Caption, author, likes and comments are read from Instagram's page data when a Reel is downloaded, so they stay empty until then and are a snapshot of that moment. Jobs are kept in memory and are lost on restart; the database and files persist. Transcription and analysis are not part of the API yet.
 
 ## Current status
 

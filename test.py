@@ -1,18 +1,19 @@
 
 import argparse
 import os
-import re
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from playwright.sync_api import sync_playwright
 
-PROFILE_DIR = Path(".instagram_profile").resolve()
-INSTAGRAM_URL = "https://www.instagram.com/"
-REEL_PATH_PATTERN = re.compile(r"^/(?:reel|reels)/([^/?#]+)(?:/|$)")
+from app.scraper.browser import launch_context
+from app.models import reels as reel_store
+from app.models.migrate import apply_migrations
+from app.scraper.collector import write_urls
+from app.scraper.downloader import download_reels
+from app.scraper.instagram import collect_reel_urls, open_group_conversation
 
 
-def arguments() -> tuple[str, Path, int]:
+def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Collect Instagram Reel URLs from a group conversation."
     )
@@ -31,7 +32,18 @@ def arguments() -> tuple[str, Path, int]:
         "--max-scrolls",
         type=int,
         default=200,
-        help="Maximum upward scrolls while loading older messages (default: 200).",
+        help="Maximum downward scrolls through the conversation (default: 200).",
+    )
+    parser.add_argument(
+        "--download-dir",
+        type=Path,
+        default=Path("downloads"),
+        help="Folder for the downloaded videos (default: downloads).",
+    )
+    parser.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Only collect URLs; do not download the videos afterwards.",
     )
     args = parser.parse_args()
 
@@ -40,126 +52,58 @@ def arguments() -> tuple[str, Path, int]:
     if args.max_scrolls < 1:
         parser.error("--max-scrolls must be at least 1")
 
-    return args.group, args.output, args.max_scrolls
+    return args
 
 
-def open_group_conversation(page, group_name: str) -> None:
-    """Open Messages from the Instagram home page, then select one group."""
-    page.goto(INSTAGRAM_URL, wait_until="domcontentloaded")
-
+def database_available() -> bool:
+    """Migrate and check Postgres; on failure say so and carry on with files only."""
     try:
-        messages_link = page.locator('a[href^="/direct/"]').first
-        messages_link.wait_for(state="visible", timeout=15_000)
-        messages_link.click()
-    except Exception as error:
-        raise RuntimeError(
-            "Could not find the Instagram Messages icon. Confirm the saved profile is logged in."
-        ) from error
-
-    try:
-        page.get_by_text(group_name, exact=True).first.wait_for(
-            state="visible", timeout=15_000
-        )
-        page.get_by_text(group_name, exact=True).first.click()
-    except Exception as error:
-        raise RuntimeError(
-            f'Could not find the group named "{group_name}" in Messages.'
-        ) from error
-
-    page.wait_for_timeout(750)
-
-
-def reel_url_from_href(href: str) -> str | None:
-    """Return a canonical Reel URL for a matching Instagram href."""
-    parsed = urlsplit(urljoin(INSTAGRAM_URL, href))
-    if parsed.netloc not in {"instagram.com", "www.instagram.com"}:
-        return None
-    if parsed.path.startswith("/reels/audio/"):
-        return None
-    if not REEL_PATH_PATTERN.match(parsed.path):
-        return None
-    return urlunsplit(("https", "www.instagram.com", parsed.path, "", ""))
-
-
-def collect_reel_urls(page, output_path: Path, max_scrolls: int) -> list[str]:
-    """Harvest Reel links while scrolling downward through the conversation."""
-    found: set[str] = set()
-
-    page.evaluate(
-        """
-        () => {
-            const scrollables = [document.scrollingElement, ...document.querySelectorAll('*')]
-                .filter(element => element && element.scrollHeight > element.clientHeight + 20);
-            for (const element of scrollables) {
-                element.scrollTop = 0;
-            }
-        }
-        """
-    )
-    page.wait_for_timeout(1_000)
-
-    for _ in range(max_scrolls):
-        hrefs = page.locator('a[href*="/reel"], a[href*="/reels"]').evaluate_all(
-            "elements => elements.map(element => element.href)"
-        )
-        for href in hrefs:
-            reel_url = reel_url_from_href(href)
-            if reel_url:
-                found.add(reel_url)
-        write_urls(output_path, sorted(found))
-
-        page.evaluate(
-            """
-            () => {
-                const scrollables = [document.scrollingElement, ...document.querySelectorAll('*')]
-                    .filter(element => element && element.scrollHeight > element.clientHeight + 20);
-                for (const element of scrollables) {
-                    element.scrollTop = Math.min(
-                        element.scrollHeight - element.clientHeight,
-                        element.scrollTop + Math.max(800, element.clientHeight * 0.8)
-                    );
-                }
-            }
-            """
-        )
-        viewport = page.viewport_size
-        center_x = viewport["width"] // 2
-        center_y = viewport["height"] // 2
-
-        # Move the mouse to the center
-        page.mouse.move(center_x, center_y)
-
-
-        page.mouse.wheel(0, -1800)
-        page.wait_for_timeout(500)
-
-    return sorted(found)
-
-
-def write_urls(output_path: Path, urls: list[str]) -> None:
-    output_path.write_text("".join(f"{url}\n" for url in urls), encoding="utf-8")
+        apply_migrations()
+        return True
+    except RuntimeError as error:
+        print(f"Warning: results will not be saved to Postgres. {error}")
+        return False
 
 
 def main() -> None:
-    group_name, output_path, max_scrolls = arguments()
+    args = arguments()
+    use_database = database_available()
+
+    def remember_url(url: str, urls: list[str]) -> None:
+        write_urls(args.output, urls)
+        if use_database:
+            reel_store.add_reel(url, args.group)
+
+    def remember_download(result: dict, results: list[dict]) -> None:
+        if use_database and result["ok"] and result["path"]:
+            reel_store.save_download(result["url"], result["path"], result["details"])
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(PROFILE_DIR),
-            headless=False,
-            viewport={"width": 1280, "height": 900},
-        )
+        context = launch_context(p, headless=False)
 
         try:
             page = context.pages[0] if context.pages else context.new_page()
-            open_group_conversation(page, group_name)
-            urls = collect_reel_urls(page, output_path, max_scrolls)
-            write_urls(output_path, urls)
-            print(f'Found {len(urls)} unique Reel URL(s) in "{group_name}".')
-            print(f"Saved URLs to {output_path.resolve()}")
-            input("Press Enter to close the browser... ")
+            open_group_conversation(page, args.group)
+            urls = collect_reel_urls(
+                page,
+                args.max_scrolls,
+                on_url=remember_url,
+            )
+            write_urls(args.output, urls)
         finally:
-            context.close()
+            context.close()  # the download below needs the same browser profile
+
+    print(f'Found {len(urls)} unique Reel URL(s) in "{args.group}".')
+    print(f"Saved URLs to {args.output.resolve()}")
+
+    if args.no_download or not urls:
+        return
+
+    results = download_reels(
+        urls, args.download_dir, headless=True, on_result=remember_download
+    )
+    saved = sum(result["ok"] for result in results)
+    print(f"Downloaded or found {saved} of {len(urls)} Reel(s) in {args.download_dir.resolve()}")
 
 
 if __name__ == "__main__":
