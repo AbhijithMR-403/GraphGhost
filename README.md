@@ -1,6 +1,6 @@
-# DevDay Exchange Community Hackathon: Kochi
+# GraphGhost
 
-A repository template for participants at the 10–11 October 2026 hackathon. It contains event rules and documentation scaffolding; build your project from scratch at the event.
+GraphGhost opens a locally authenticated Instagram session, navigates to Messages, selects a specified group conversation, and collects Reel links from the loaded conversation history. It is a small Playwright-based automation prototype built during the DevDay Exchange Community Hackathon: Kochi.
 
 **[Event and registration on Luma](https://luma.com/z10nz8gp)** · **[Event rules](RULES.md)** · **[Agent instructions](AGENTS.md)**
 
@@ -19,38 +19,42 @@ A repository template for participants at the 10–11 October 2026 hackathon. It
 
 Keep your approved Luma QR code ready for entry, and bring your laptop and charger. Eligible checked-in participants will receive Codex credits and OpenAI API credits.
 
-## Use this template
+## Run the project
 
-1. Select **Use this template → Create a new repository** on GitHub. Create your own project repository and clone it.
-2. Read [RULES.md](RULES.md) and [AGENTS.md](AGENTS.md) before building. Begin project implementation at the event.
-3. Fill in the project overview below as you build. Use any suitable language or framework, keeping the implementation simple.
-4. Record meaningful changes in [CHANGELOG.md](CHANGELOG.md) and your Codex usage in [AI_USAGE.md](AI_USAGE.md). Commit after completed milestones; aim for a meaningful checkpoint about every 30 minutes.
-5. Complete [SUBMISSION.md](SUBMISSION.md) with your code repository, short project description, and working demo. Follow submission instructions announced by the organizers.
+Prerequisites: Python 3.10+ and the Playwright Python package with Chromium installed.
 
-This template has no application code or required technology stack. The documentation and commit cadence are repository workflow guidance; the event participation rules are in [RULES.md](RULES.md).
+```bash
+python3 -m venv venv
+venv/bin/python -m pip install playwright
+venv/bin/python -m playwright install chromium
+```
 
-## Project overview — complete during the event
+The browser profile lives in `.instagram_profile/` and is deliberately ignored by Git because it can contain session credentials. Log in to Instagram in that profile once before running the automation; later runs reuse the stored session.
 
-- **Project name:** TODO
-- **Short description:** TODO — what it does, who it helps, and why it matters.
-- **Team:** TODO — participant names and GitHub handles; maximum 4 members.
-- **Working demo:** TODO — link or local demo instructions.
-- **Technology stack:** TODO
+Open a group by giving its exact visible name:
 
-### Run the project
+```bash
+venv/bin/python test.py --group "Example Group"
+```
 
-Replace these placeholders with commands that actually work for your project:
+The command saves one canonical URL per Reel to `reel_urls.txt`. Choose another output file with `--output`:
 
-1. Prerequisites and versions: TODO
-2. Dependency installation: TODO
-3. Environment setup: TODO — list required variable names and provide a sanitized `.env.example` if needed.
-4. Start the project: TODO
-5. Run checks or tests: TODO
+```bash
+venv/bin/python test.py --group "Example Group" --output reels.txt
+```
 
-### Current status
+Or set the name through an environment variable:
 
-- Working features: TODO
-- Known limitations: TODO
-- Libraries, APIs, and public datasets used: TODO — include source links and applicable attribution.
+```bash
+INSTAGRAM_GROUP="Example Group" venv/bin/python test.py
+```
+
+The script opens Instagram, clicks the Messages icon, selects the matching group, moves to the top of the conversation, and scrolls downward. On every pass it checks message links for Reel URLs, deduplicates them, and rewrites the output file with the URLs found so far. It keeps the browser open until Enter is pressed. It reports an error when the saved session is no longer logged in or the group is absent from the current inbox. Use `--max-scrolls` to increase the scan limit for a large conversation.
+
+## Current status
+
+- Working features: Persistent local browser profile, Messages navigation, exact-name group selection, and deduplicated Reel URL export.
+- Known limitations: Instagram UI or login changes can break the browser selectors. The target group must already be visible in the inbox. Collection stops after `--max-scrolls`; verify the count for very large conversations. The script does not send messages.
+- Libraries: [Playwright for Python](https://playwright.dev/python/). No datasets or external APIs are used.
 
 See [AI_USAGE.md](AI_USAGE.md) for AI assistance and [CHANGELOG.md](CHANGELOG.md) for the development record.

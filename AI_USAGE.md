@@ -8,7 +8,8 @@ No participant AI usage has been recorded yet. Replace the placeholder row as yo
 
 | Date and time with timezone | Tool / model, if known | Task | Assistance and affected files | Human review / corrections | Validation and result |
 | --- | --- | --- | --- | --- | --- |
-| TODO | Codex | TODO | TODO | Pending | TODO |
+| 2026-10-10T23:31:58+0530 | Codex | Collect Reel URLs from an Instagram group | Added bounded conversation scrolling, Reel-link extraction, deduplication, and output-file support in `test.py`; updated `README.md`. | Pending human review | Python compile check run; live Instagram verification still required |
+| 2026-10-10T23:53:49+0530 | Codex | Correct conversation scan direction and checkpoint output | Changed the scan to reset to the top, scroll downward, and save discovered URLs on every pass in `test.py`; updated `README.md`. | Pending human review | Python syntax compilation passed; live Instagram verification remains required |
 
 ## Template preparation
 

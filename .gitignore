@@ -20,5 +20,6 @@ __pycache__/
 .DS_Store
 Thumbs.db
 *.log
+.instagram_profile/
 
 # Add entries appropriate to your chosen language or framework.
