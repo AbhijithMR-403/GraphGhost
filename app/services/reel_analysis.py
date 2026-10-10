@@ -1,9 +1,13 @@
 import json
+import logging
 import os
+import time
 
 import httpx
 
 from app.services.openai_api import API_BASE, auth_headers, check
+
+log = logging.getLogger("graphghost.openai")
 
 EXPECTED_KEYS = {
     "reel_summary", "language", "food_items", "restaurant_name", "addresses",
@@ -47,6 +51,8 @@ def response_text(body: dict) -> str:
 def analyze(transcript: str) -> dict:
     """Ask the model to extract food-discovery details from a transcript."""
     model = os.environ.get("OPENAI_ANALYSIS_MODEL", "gpt-6-luna")
+    log.info("OpenAI analysis: %d-character transcript with %s", len(transcript), model)
+    started = time.monotonic()
     response = httpx.post(
         f"{API_BASE}/responses",
         headers=auth_headers(),
@@ -54,6 +60,7 @@ def analyze(transcript: str) -> dict:
         timeout=120,
     )
     text = response_text(check(response))
+    log.info("OpenAI analysis done in %.1fs", time.monotonic() - started)
 
     # The prompt forbids Markdown, but tolerate a fenced reply.
     if text.startswith("```"):

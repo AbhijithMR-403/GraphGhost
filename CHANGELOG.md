@@ -161,3 +161,52 @@ The implementation record above replaces the initial documentation-only placehol
 - Why: The user wanted the analysis JSON as proper tables, with support for more than one location per Reel.
 - Validation: On a throwaway Postgres 18: the user's sample JSON migrated into one analysis row and one location row with every field intact (including Malayalam evidence text); malformed stored JSON (string confidence, scalar `food_items`, non-object address, empty array, nulls) migrated without error, with unusable values set to NULL; saving three locations and re-saving with one left exactly one; the reassembled API shape had all ten keys plus `analyzed_at`.
 - Limitations: Raw model output is no longer kept, so unexpected extra keys the model returns are dropped; `price_information` stays free-form JSONB; the migration is forward-only (dropped columns are not restored); no endpoint searches locations across Reels yet.
+
+## 2026-10-11T05:05:00+0530 — Decide downloads from the database, not from files
+
+- Changed: A Reel is skipped only when its database row already has `video_path`; a file on disk no longer causes a skip and is overwritten when the Reel is downloaded. Applies to the download job (explicit `urls` are filtered too, reported as "Already downloaded (database)."), `test.py` and `download_reels.py`. Added `force` to `POST /download` and `--force` to `download_reels.py` to download again regardless. `download_reels.py` now applies migrations and falls back to downloading everything, with a warning, when Postgres is unreachable.
+- Why: The user asked that downloading check the database, not the files, and allowed overwriting files.
+- Validation: On a throwaway Postgres 18 with the downloader stubbed: a Reel marked downloaded in the database (file absent) was skipped and not sent to the downloader; a Reel with a stale file but no database path was sent and its file overwritten; `force` re-sent a downloaded Reel; with nothing pending the job failed with the "Nothing to download" message. A live run of `download_reels.py` replaced a 5-byte placeholder with a 3,113,264-byte MP4.
+- Limitations: If the database says downloaded but the file was deleted, the Reel is not re-downloaded until `force` is used, and its `/downloads/<code>` link returns 404; an explicit "Nothing to download" request ends as a failed job.
+
+## 2026-10-11T05:35:00+0530 — Collection stops at Reels the database already has
+
+- Changed: Collection now reads the chat from the newest message upwards and stops after 5 consecutive Reels whose code is already in Postgres (`STOP_AFTER_KNOWN` in `app/scraper/instagram.py`). `full: true` on `POST /collect` and `--full` on `test.py` scan the whole conversation instead. Reel keys are now measured from the bottom of the chat so they stay valid while older messages load above. Added `known_codes()` to `app/models/reels.py`. Replaced `scroll_to_oldest_message` with `scroll_to_newest_message`.
+- Why: The user asked that `/collect` also check the database instead of re-processing everything. A Reel's code is only revealed by opening it, so the check happens as each Reel is opened and ends the scan once known Reels start.
+- Validation: A simulated 90-message chat with lazily loading older batches: a full scan opened each of 30 Reels exactly once; with 8 new Reels it opened those 8 plus 5 known ones and stopped; with nothing new it opened 5; an empty database scanned everything; a known Reel re-shared as the newest message did not end the scan early. Not run against a real Instagram chat.
+- Limitations: Known Reels are still opened (up to 5 per run) because they cannot be recognised without opening them; a Reel missed by an earlier run and older than known ones is only picked up by a `full` scan; results of an incremental run list the Reels opened this run, with the full set in the database and `reel_urls.txt` after the run.
+
+## 2026-10-11T04:30:00+0530 — Make opening the Messages page and the group more reliable
+
+- Changed: `app/scraper/instagram.py` now dismisses "Not Now" dialogs, opens the inbox through the Messages icon with a fallback to `/direct/inbox/`, detects a login redirect, scrolls the inbox list (up to 20 times) to find the group, and checks that the click opened a `/direct/t/` conversation (retrying up to 3 times). Errors include the current page URL. `test.py` leaves the browser open on an error until Enter is pressed instead of closing at once.
+- Why: The user reported the browser shutting off after the Messages page opened, before or while the group was selected. The earlier code waited 15 seconds once for the group, did not confirm the click, and closed the browser on any error.
+- Validation: Compiled; with a group name that does not exist the real inbox was opened headless and a clear `RuntimeError` naming the group and page URL was raised after about a minute. The success path and the original failure were not reproduced, so the cause of the reported shutdown is not confirmed.
+- Limitations: The Instagram selectors can still change; a missing group takes about a minute to report; two browsers on the same profile (CLI plus API, or two jobs) collide.
+
+## 2026-10-11T04:50:00+0530 — Reliably scroll to the newest message before scanning upwards
+
+- Changed: `scroll_to_newest_message` in `app/scraper/instagram.py` now waits for the conversation pane to render, keeps scrolling down, and only proceeds once the pane has been at the bottom with an unchanged height for 3 checks in a row; it raises "Could not reach the newest message" if it never settles, and prints the chat height when done.
+- Why: The user reported it going straight to scrolling up. The old check accepted "at the bottom" after two quick reads, did not tolerate the pane not being rendered yet, and ignored the chat growing as media loaded, so the upward scan could start from the wrong place.
+- Validation: In the simulated chat (opens at the top, renders late, grows after load) the new code starts at the newest Reel and opens all 33 Reels; the previous logic on the same chat started from an older Reel and missed the 3 newest. Earlier simulation cases still pass. Not run against real Instagram.
+- Limitations: Waiting for a steady height adds about 1.5 seconds per run; a conversation that keeps growing (very active group) may hit the scroll limit and raise.
+
+## 2026-10-11T04:35:00+0530 — Revert collection scrolling to the oldest-to-newest scan
+
+- Changed: `app/scraper/instagram.py` again scrolls to the oldest message, then walks down one screen at a time opening each Reel (the version that worked before the newest-first change). Removed `scroll_to_newest_message`, the early stop (`STOP_AFTER_KNOWN`, `known_codes`), `known_codes()` in `app/models/reels.py`, the `full` option in `POST /collect`, and `--full` in `test.py`. Reel keys are measured from the top of the chat again. The hardened Messages/group selection and the database-driven download skip are kept.
+- Why: The user reported the newest-first scan "just trying to scrolling" and asked to go back to the old scan that worked.
+- Validation: All changed modules compile; a simulated 90-message chat with lazily loading history opened all 30 Reels exactly once, oldest to newest. Not run against real Instagram.
+- Limitations: Every collection scans the whole conversation again (no early stop); known Reels are only skipped at download time.
+
+## 2026-10-11T04:39:00+0530 — `POST /download` also processes already-downloaded Reels
+
+- Changed: `run_download` in `app/workers/tasks.py` no longer fails when there is nothing left to download but downloaded Reels still lack a transcript or analysis; it then queues the transcribe job. It fails only when there is nothing to download and nothing to process (message: "Nothing to do: every collected Reel is already downloaded and processed.").
+- Why: The user expects `POST /download` with `{}` to download every undownloaded Reel, then transcribe, analyse and store them. Reels downloaded earlier but never transcribed were previously left behind.
+- Validation: On a throwaway Postgres 18 with the downloader and OpenAI calls stubbed: three undownloaded Reels were downloaded, transcribed, analysed and stored with two locations each; a Reel that was downloaded but unprocessed was transcribed with no download call; with everything processed, or with `transcribe` false and nothing to download, the job failed with the "Nothing to do" message. No real Instagram or OpenAI request was made.
+- Limitations: The first real transcription depends on the model names and key in `.env`; a failed transcription is retried (and billed) on the next call.
+
+## 2026-10-11T04:55:00+0530 — Log job progress to the terminal
+
+- Changed: `app/main.py` configures logging at INFO in uvicorn's `INFO:     ` style. `app/workers/tasks.py` logs when a job is queued, started, finished (a warning with the ok/failed counts when some items failed) or failed; the download counts; and for each Reel `[n/total] code` the transcription, transcript saved, analysis and analysis saved (with location count) steps, and each failure with its stage and message. `app/services/transcription.py` and `app/services/reel_analysis.py` log the OpenAI request (file size, model, duration).
+- Why: The user could only see uvicorn's access line (`POST /transcribe ... 202 Accepted`) and no progress or errors in the terminal.
+- Validation: Compiled; ran the app against a throwaway Postgres 18 with OpenAI stubbed, including one failing Reel, and checked the terminal output: queued, started, per-Reel steps, an `ERROR` line with the OpenAI message for the failing Reel, and a `WARNING` summary. Not run against the real OpenAI API.
+- Limitations: Transcript text and API keys are deliberately not logged; the scraper's own progress still comes from `print` lines; logs go to the terminal only and are not kept in a file.

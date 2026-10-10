@@ -90,6 +90,11 @@ def main() -> None:
                 on_url=remember_url,
             )
             write_urls(args.output, urls)
+        except Exception as error:
+            # Leave the window open so you can see what Instagram is showing.
+            print(f"Error: {error}")
+            input("The browser is still open so you can look at the page. Press Enter to close... ")
+            raise SystemExit(1) from error
         finally:
             context.close()  # the download below needs the same browser profile
 
@@ -99,11 +104,17 @@ def main() -> None:
     if args.no_download or not urls:
         return
 
-    results = download_reels(
-        urls, args.download_dir, headless=True, on_result=remember_download
-    )
+    skipped = []
+    if use_database:
+        urls, skipped = reel_store.split_downloaded(urls)  # the database decides
+
+    results = skipped
+    if urls:
+        results += download_reels(
+            urls, args.download_dir, headless=True, on_result=remember_download
+        )
     saved = sum(result["ok"] for result in results)
-    print(f"Downloaded or found {saved} of {len(urls)} Reel(s) in {args.download_dir.resolve()}")
+    print(f"Downloaded or already downloaded: {saved} of {len(results)} Reel(s) in {args.download_dir.resolve()}")
 
 
 if __name__ == "__main__":

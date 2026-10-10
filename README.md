@@ -49,7 +49,7 @@ Or set the name through an environment variable:
 INSTAGRAM_GROUP="Example Group" venv/bin/python test.py
 ```
 
-The script opens Instagram, clicks the Messages icon, selects the matching group, and scrolls up to the oldest message. It then walks down one screen at a time: on each screen it clicks every Reel message not yet handled, reads the `/reel/<code>/` URL from the address bar, goes back to the chat, and rewrites the output file after every Reel. When collection finishes the browser closes and every collected Reel is downloaded to `downloads/<code>.mp4` (change the folder with `--download-dir`, skip downloading with `--no-download`; videos that already exist are skipped). It reports an error when the saved session is no longer logged in or the group is absent from the current inbox. Use `--max-scrolls` to bound both the scroll to the oldest message and the walk down for a large conversation. The CLI also saves the Reels, their details and each video's relative path to Postgres when the database is reachable; otherwise it prints a warning and keeps the files only.
+The script opens Instagram, clicks the Messages icon, selects the matching group, and scrolls up to the oldest message. It then walks down one screen at a time: on each screen it clicks every Reel message not yet handled, reads the `/reel/<code>/` URL from the address bar, goes back to the chat, and rewrites the output file after every Reel. Every run scans the whole conversation; Reels already in Postgres are kept and are not downloaded again. When collection finishes the browser closes and every collected Reel is downloaded to `downloads/<code>.mp4` (change the folder with `--download-dir`, skip downloading with `--no-download`; a Reel is skipped when the database already has its `video_path`; an existing file on disk is overwritten). It closes Instagram's notification pop-ups, scrolls the inbox list to find the group, and confirms a conversation really opened. On an error it prints the message (including the page it was on) and leaves the window open until you press Enter. It reports an error when the saved session is no longer logged in or the group is absent from the inbox. Run only one thing at a time: the CLI and the API share `.instagram_profile`, and two browsers on it collide. Use `--max-scrolls` to bound both the scroll to the oldest message and the walk down for a large conversation. The CLI also saves the Reels, their details and each video's relative path to Postgres when the database is reachable; otherwise it prints a warning and keeps the files only.
 
 ### Download the Reels
 
@@ -59,7 +59,7 @@ After `test.py` has written the URLs, download the videos with the same saved lo
 venv/bin/python download_reels.py --input reel_urls.txt --output-dir downloads
 ```
 
-Each Reel is saved as `downloads/<code>.mp4`; files that already exist are skipped. Add `--headed` to watch the browser. Close any other browser using `.instagram_profile` first. The script reads the video URL from the data the Reel page loads, so it needs the profile to be logged in; Instagram rejects unauthenticated requests.
+Each Reel is saved as `downloads/<code>.mp4`; a Reel is skipped when the database already has its `video_path` (files on disk are not checked and are overwritten when downloaded); add `--force` to download again regardless. If Postgres is unreachable it warns and downloads everything. Add `--headed` to watch the browser. Close any other browser using `.instagram_profile` first. The script reads the video URL from the data the Reel page loads, so it needs the profile to be logged in; Instagram rejects unauthenticated requests.
 
 ### API
 
@@ -112,7 +112,7 @@ Requests return a `job_id` immediately. Jobs go on an in-process queue and run o
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /collect` with `{"group": "Example Group"}` | Queue a collection. Optional `max_scrolls`, `headless`, `download` (default `true`: queue a download of new Reels when collection finishes) and `transcribe` (default `true`: transcribe and analyse them after the download). |
-| `POST /download` with `{}` or `{"urls": [...]}` | Queue a download of the given URLs, or of every collected Reel not downloaded yet. Files go to `downloads/<code>.mp4`. |
+| `POST /download` with `{}` or `{"urls": [...]}` | Queue a download of the given URLs, or of every collected Reel not downloaded yet. The database decides what counts as downloaded (`video_path` set); existing files are overwritten. `"force": true` downloads again regardless. Files go to `downloads/<code>.mp4`. Unless `"transcribe": false`, downloaded Reels with no transcript or analysis are then transcribed and analysed and stored; this also happens when there is nothing left to download. The job only fails when nothing is left to download or process. |
 | `POST /transcribe` | Queue transcription and analysis of downloaded Reels that have no transcript or analysis yet. |
 | `GET /jobs`, `GET /jobs/{job_id}` | `status` (`queued`, `running`, `done`, `failed`), progress in `results`, and any `error`. |
 | `GET /reels?downloaded=true\|false` | Every collected Reel with details. |

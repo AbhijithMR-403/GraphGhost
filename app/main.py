@@ -1,3 +1,4 @@
+import logging
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -9,6 +10,9 @@ from pydantic import BaseModel, Field
 from app.models import reels as reel_store
 from app.models.migrate import apply_migrations
 from app.workers import tasks
+
+# Show job progress in the terminal next to uvicorn's own "INFO:" lines.
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
 
 
 @asynccontextmanager
@@ -39,6 +43,10 @@ class DownloadRequest(BaseModel):
         description="Reel URLs to download; empty means every collected Reel not downloaded yet",
     )
     headless: bool = True
+    force: bool = Field(
+        default=False,
+        description="Download again (overwriting the file) even if the database says downloaded",
+    )
     transcribe: bool = Field(
         default=True, description="Transcribe and analyse downloaded Reels afterwards"
     )

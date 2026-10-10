@@ -132,6 +132,26 @@ def get_reel(code: str) -> dict | None:
         return attach_analysis(db, [row])[0] if row else None
 
 
+def split_downloaded(urls: list[str]) -> tuple[list[str], list[dict]]:
+    """Split URLs into those still to download and results for those the database
+    already marks as downloaded (video_path set). Files on disk are not consulted."""
+    with connect() as db:
+        stored = {
+            row["code"]: row["video_path"]
+            for row in db.execute("SELECT code, video_path FROM reels WHERE video_path IS NOT NULL")
+        }
+    pending, skipped = [], []
+    for url in urls:
+        path = stored.get(code_from_url(url))
+        if path:
+            skipped.append(
+                {"url": url, "ok": True, "message": "Already downloaded (database).", "path": path}
+            )
+        else:
+            pending.append(url)
+    return pending, skipped
+
+
 def list_needing_ai() -> list[dict]:
     """Downloaded Reels that still need a transcript, or an analysis of a non-empty one."""
     with connect() as db:

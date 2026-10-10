@@ -114,10 +114,6 @@ def download_reel(context, page, reel_url: str, output_dir: Path) -> dict:
 
     target = output_dir / f"{match.group(1)}.mp4"
     result["path"] = Path(os.path.relpath(target)).as_posix()
-    if target.exists():
-        result.update(ok=True, message="Already downloaded.")
-        return result
-
     media = get_media(page, reel_url, match.group(1))
     if not media:
         result["message"] = "No video found for this Reel (logged out, or Instagram changed its data?)."
@@ -129,8 +125,9 @@ def download_reel(context, page, reel_url: str, output_dir: Path) -> dict:
         result["message"] = f"Download failed with HTTP {response.status}."
         return result
 
+    replaced = target.exists()  # the database decides what to fetch; a file is overwritten
     target.write_bytes(response.body())
-    result.update(ok=True, message="Saved.")
+    result.update(ok=True, message="Saved (replaced existing file)." if replaced else "Saved.")
     return result
 
 

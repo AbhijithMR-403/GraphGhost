@@ -8,28 +8,79 @@ REEL_URL_PATTERN = re.compile(
 )
 
 
+THREAD_URL_PATTERN = re.compile(r"/direct/t/")
+INBOX_URL = INSTAGRAM_URL + "direct/inbox/"
+
+
+def dismiss_popups(page) -> None:
+    """Close Instagram's "Turn on notifications" style dialogs, which block clicks."""
+    for label in ("Not Now", "Not now"):
+        button = page.get_by_role("button", name=label)
+        if button.count():
+            try:
+                button.first.click(timeout=2_000)
+            except PlaywrightTimeoutError:
+                pass  # it went away on its own
+
+
+def open_messages(page) -> None:
+    """Go to the inbox through the Messages icon, falling back to its address."""
+    try:
+        link = page.locator('a[href="/direct/inbox/"], a[href^="/direct/"]').first
+        link.wait_for(state="visible", timeout=15_000)
+        link.click()
+        page.wait_for_url(re.compile(r"/direct/"), timeout=10_000)
+    except PlaywrightTimeoutError:
+        # The icon was not found (slow page or a different layout): open the inbox directly.
+        page.goto(INBOX_URL, wait_until="domcontentloaded")
+
+    if "/accounts/login" in page.url:
+        raise RuntimeError(
+            "Instagram is asking to log in. Log in once in the saved profile "
+            f"(.instagram_profile) and run again. Page: {page.url}"
+        )
+
+
+def find_group_in_inbox(page, group_name: str, max_scrolls: int = 20):
+    """Return the group's entry in the inbox list, scrolling the list to load more."""
+    entry = page.get_by_text(group_name, exact=True).first
+    viewport = page.viewport_size
+    list_point = (int(viewport["width"] * 0.2), viewport["height"] // 2)
+
+    for _ in range(max_scrolls):
+        try:
+            entry.wait_for(state="visible", timeout=3_000)
+            return entry
+        except PlaywrightTimeoutError:
+            page.mouse.move(*list_point)  # the inbox list is the left column
+            page.mouse.wheel(0, 700)      # older conversations load as it scrolls
+    raise RuntimeError(
+        f'Could not find a conversation named "{group_name}" in Messages '
+        f"(exact name, case sensitive). Page: {page.url}"
+    )
+
+
 def open_group_conversation(page, group_name: str) -> None:
     """Open Messages from the Instagram home page, then select one group."""
     page.goto(INSTAGRAM_URL, wait_until="domcontentloaded")
+    dismiss_popups(page)
+    open_messages(page)
+    dismiss_popups(page)
 
-    try:
-        messages_link = page.locator('a[href^="/direct/"]').first
-        messages_link.wait_for(state="visible", timeout=15_000)
-        messages_link.click()
-    except Exception as error:
-        raise RuntimeError(
-            "Could not find the Instagram Messages icon. Confirm the saved profile is logged in."
-        ) from error
+    entry = find_group_in_inbox(page, group_name)
 
-    try:
-        page.get_by_text(group_name, exact=True).first.wait_for(
-            state="visible", timeout=15_000
-        )
-        page.get_by_text(group_name, exact=True).first.click()
-    except Exception as error:
-        raise RuntimeError(
-            f'Could not find the group named "{group_name}" in Messages.'
-        ) from error
+    # Confirm the click really opened a conversation, and retry if a dialog ate it.
+    for attempt in range(3):
+        dismiss_popups(page)
+        entry.click()
+        try:
+            page.wait_for_url(THREAD_URL_PATTERN, timeout=8_000)
+            break
+        except PlaywrightTimeoutError:
+            if attempt == 2:
+                raise RuntimeError(
+                    f'Clicked "{group_name}" but no conversation opened. Page: {page.url}'
+                ) from None
 
     page.wait_for_timeout(750)
 
@@ -132,7 +183,7 @@ def next_unseen_reel(state: dict, seen_keys: list[int]) -> tuple[int, int] | Non
 def collect_reel_urls(page, max_scrolls: int, on_url=None) -> list[str]:
     """Go from the oldest message down, opening every Reel on each screen.
 
-    on_url(url, all_urls) is called after each new Reel so callers can save progress.
+    on_url(url, all_urls) is called after each Reel so callers can save progress.
     """
     found: set[str] = set()
     seen_keys: list[int] = []
