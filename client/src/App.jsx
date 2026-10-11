@@ -1,121 +1,161 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
+import { useEffect, useRef, useState } from 'react'
+import Spot from './Spot.jsx'
 import './App.css'
 
+// In development Vite proxies /api to the FastAPI server (see vite.config.js).
+const API_URL = import.meta.env.VITE_API_URL ?? '/api'
+const HISTORY_TURNS = 6
+const INSTAGRAM_URL = /(https?:\/\/(?:www\.)?instagram\.com\/[^\s)]+)/g
+
+const SUGGESTIONS = [
+  'Where can I eat a good burrito?',
+  'Best biryani spots',
+  'Cheap breakfast places',
+  'Something spicy near me',
+]
+
+// Turn any Instagram link in plain text into a clickable link.
+function linkify(text) {
+  return text.split(INSTAGRAM_URL).map((part, index) =>
+    index % 2 === 1 ? (
+      <a key={index} href={part} target="_blank" rel="noopener noreferrer">
+        {part}
+      </a>
+    ) : (
+      part
+    ),
+  )
+}
+
+async function askChatbot(message, history) {
+  const response = await fetch(`${API_URL}/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, history }),
+  })
+  const data = await response.json().catch(() => ({}))
+  if (!response.ok) {
+    throw new Error(data.detail || `Request failed (${response.status})`)
+  }
+  return data
+}
+
 function App() {
-  const [count, setCount] = useState(0)
+  const [messages, setMessages] = useState([])
+  const [input, setInput] = useState('')
+  const [loading, setLoading] = useState(false)
+  const endRef = useRef(null)
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [messages, loading])
+
+  async function send(text) {
+    const message = text.trim()
+    if (!message || loading) return
+
+    const history = messages
+      .filter((m) => !m.error)
+      .slice(-HISTORY_TURNS)
+      .map((m) => ({ role: m.role, content: m.text }))
+
+    setMessages((current) => [...current, { role: 'user', text: message }])
+    setInput('')
+    setLoading(true)
+
+    try {
+      const data = await askChatbot(message, history)
+      setMessages((current) => [
+        ...current,
+        { role: 'assistant', text: data.answer, spots: data.spots },
+      ])
+    } catch (error) {
+      setMessages((current) => [
+        ...current,
+        { role: 'assistant', text: error.message, error: true, spots: [] },
+      ])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function onSubmit(event) {
+    event.preventDefault()
+    send(input)
+  }
+
+  function onKeyDown(event) {
+    if (event.key === 'Enter' && !event.shiftKey) {
+      event.preventDefault()
+      send(input)
+    }
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
+    <div className="app">
+      <header className="header">
+        <span className="logo" aria-hidden="true" />
+        <h1>Food spots</h1>
+      </header>
+
+      <main className="thread" aria-live="polite">
+        {messages.length === 0 && (
+          <section className="empty">
+            <h2>What are you craving?</h2>
+            <p>Ask for a dish or a place. Answers come from the Reels you saved.</p>
+            <div className="chips">
+              {SUGGESTIONS.map((suggestion) => (
+                <button
+                  key={suggestion}
+                  type="button"
+                  className="chip"
+                  onClick={() => send(suggestion)}
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {messages.map((message, index) => (
+          <article key={index} className={`message ${message.role}`}>
+            <p className={message.error ? 'text error' : 'text'}>
+              {linkify(message.text)}
+            </p>
+            {message.spots?.map((spot) => (
+              <Spot key={spot.code} spot={spot} />
+            ))}
+          </article>
+        ))}
+
+        {loading && (
+          <article className="message assistant" aria-label="Thinking">
+            <p className="text typing">
+              <span />
+              <span />
+              <span />
+            </p>
+          </article>
+        )}
+        <div ref={endRef} />
+      </main>
+
+      <form className="composer" onSubmit={onSubmit}>
+        <textarea
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Ask for a place or a dish"
+          aria-label="Your question"
+          rows={1}
+          maxLength={1000}
+        />
+        <button type="submit" disabled={loading || !input.trim()}>
+          Send
         </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      </form>
+    </div>
   )
 }
 

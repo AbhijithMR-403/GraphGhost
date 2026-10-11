@@ -210,3 +210,24 @@ The implementation record above replaces the initial documentation-only placehol
 - Why: The user could only see uvicorn's access line (`POST /transcribe ... 202 Accepted`) and no progress or errors in the terminal.
 - Validation: Compiled; ran the app against a throwaway Postgres 18 with OpenAI stubbed, including one failing Reel, and checked the terminal output: queued, started, per-Reel steps, an `ERROR` line with the OpenAI message for the failing Reel, and a `WARNING` summary. Not run against the real OpenAI API.
 - Limitations: Transcript text and API keys are deliberately not logged; the scraper's own progress still comes from `print` lines; logs go to the terminal only and are not kept in a file.
+
+## 2026-10-11T05:10:00+0530 — Add a food-spot chatbot
+
+- Changed: Added `app/services/chatbot.py` (word search over analysed Reels, a model call that picks up to 5 spots and a reason each, details and links rendered from the database, codes the model invents dropped), `app/static/chat.html` (chat page with a card per spot and a clickable Reel link), and `GET /chat` plus `POST /chat` in `app/main.py`. Optional setting `OPENAI_CHAT_MODEL` (defaults to `OPENAI_ANALYSIS_MODEL`).
+- Why: The user asked for a chatbot that shares food-spot details with a properly formatted Reel URL whenever a place is asked about.
+- Validation: On a throwaway Postgres 18 with three seeded Reels and the model stubbed: the page loads; a burrito question matched the right Reel first, returned the formatted card text with `https://www.instagram.com/reel/AAA1/`, and dropped a made-up code; a question with no matching words sent the fallback set; invalid input returned 422; a missing key returned 502 with a clear message. No real OpenAI request was made and the page was not opened in a browser.
+- Limitations: Matching is word-based, so a differently worded question may miss a spot (the model only sees those candidates, or the 30 newest when nothing matches); only analysed Reels are searchable; no authentication, so do not expose it publicly; each question costs one model call.
+
+## 2026-10-11T05:16:00+0530 — Chat UI in the React client
+
+- Changed: Replaced the Vite template demo in `client/` with a minimal white chat page: `client/src/App.jsx` (conversation, suggestion chips, typing indicator, errors, Instagram links in text made clickable), `client/src/Spot.jsx` (card per recommended place with details, the Instagram Reel link and an inline **Preview** embed), `client/src/App.css`, `client/src/index.css`, a `/api` proxy to the FastAPI server in `client/vite.config.js`, and the page title in `client/index.html`.
+- Why: The user asked for a good, minimal, white-background UI for the chatbot where an Instagram link shows up when present.
+- Validation: `npm run lint` and `npm run build` pass. In a real Chromium with the API mocked: the empty state, two spot cards with the exact Reel URLs as links, the request body (`message`, `history`), the Preview iframe pointing at `<reel url>embed`, an error message from a 502 reply, and no horizontal overflow at 390px width were checked, and screenshots were reviewed. The Instagram embed itself rendered blank in the headless test, so how it looks in a normal browser is unverified; the UI shows a hint under it. Not tested against the live API or real data.
+- Limitations: Unused template files (`src/assets/*`, `public/icons.svg`) were left in place; Instagram can block embeds for some Reels; the dev proxy only applies to `npm run dev`; the older `GET /chat` page served by FastAPI is still there.
+
+## 2026-10-11T05:25:00+0530 — Readable prices in the chat UI
+
+- Changed: Added `client/src/price.js`, which turns the model's free-form `price_information` (a string, a list of strings, a list of `{item, price, evidence}` objects, or an object such as `{mentioned, specific_price, evidence}`) into short lines; `client/src/Spot.jsx` shows one line as `Price: ...` or several as a list, and never raw JSON. The quoted evidence text is not shown. Added a `.prices` style in `client/src/App.css`.
+- Why: Cards were showing raw JSON such as `Price: [{"item":"Chicken biryani","price":"30 rupees","evidence":...}]`.
+- Validation: The formatter was run on the three reported shapes plus nulls, empty lists, duplicates, nested amounts, unknown keys and numbers; the cards were rendered in Chromium with those shapes (no braces, brackets or evidence text visible); `npm run lint` and `npm run build` pass.
+- Limitations: An unrecognised shape falls back to joining its plain text values; the server's plain-text `reply` field and the older `GET /chat` page still print prices in the raw form.

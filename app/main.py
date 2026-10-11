@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 
 from app.models import reels as reel_store
 from app.models.migrate import apply_migrations
+from app.services.chatbot import answer_question
 from app.workers import tasks
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 # Show job progress in the terminal next to uvicorn's own "INFO:" lines.
 logging.basicConfig(level=logging.INFO, format="%(levelname)s:     %(message)s")
@@ -52,9 +55,34 @@ class DownloadRequest(BaseModel):
     )
 
 
+class ChatTurn(BaseModel):
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(max_length=2000)
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=1000)
+    history: list[ChatTurn] = Field(default_factory=list, max_length=20)
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/chat")
+def chat_page() -> FileResponse:
+    """The chat page for asking about food spots."""
+    return FileResponse(STATIC_DIR / "chat.html", media_type="text/html")
+
+
+@app.post("/chat")
+def chat(request: ChatRequest) -> dict:
+    """Answer a food-spot question from the analysed Reels, with Reel links."""
+    try:
+        return answer_question(request.message, [turn.model_dump() for turn in request.history])
+    except RuntimeError as error:  # missing key, OpenAI error, unusable model reply
+        raise HTTPException(502, str(error)) from error
 
 
 @app.post("/collect", status_code=202)

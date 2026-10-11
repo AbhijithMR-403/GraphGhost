@@ -118,7 +118,11 @@ Requests return a `job_id` immediately. Jobs go on an in-process queue and run o
 | `GET /reels?downloaded=true\|false` | Every collected Reel with details. |
 | `GET /reels/{code}` | One Reel. Downloaded Reels carry `video_path` (relative to the project root, e.g. `downloads/<code>.mp4`) and `video_url` (`/downloads/<code>`). |
 | `GET /downloads`, `GET /downloads/{code}` | List downloaded files; stream one video, located through the `video_path` stored in the database. The code may be given with or without `.mp4`. |
+| `GET /chat` | A chat page: ask for a food spot and get matching places with details and Reel links. |
+| `POST /chat` with `{"message": "...", "history": [...]}` | Same as the page, as JSON: returns `answer`, `spots` (restaurant, food, places, price, reason, `url`) and a Markdown `reply`. `history` is optional (`{"role": "user"|"assistant", "content": "..."}`, last 6 turns used). |
 | `GET /health` | Liveness check. Interactive docs are at `/docs`. |
+
+The chatbot searches the analysed Reels (restaurant, food, location, price, caption), sends the best matches to the model (`OPENAI_CHAT_MODEL`, optional; defaults to `OPENAI_ANALYSIS_MODEL`) and shows the spots it picks. Details and links are taken from the database, never from the model, so a Reel link is always `https://www.instagram.com/reel/<code>/`; a code the model invents is dropped. It only knows Reels that have been collected, downloaded and analysed.
 
 Where data lives:
 
@@ -134,6 +138,18 @@ Each downloaded Reel is then transcribed (`reels.transcript`) and analysed. The 
 `GET /reels` and `GET /reels/{code}` return these assembled back into the model's original shape under `analysis` (with `addresses` as a list), or `null` when not analysed yet. Reels that already have a transcript and analysis are never sent to OpenAI again. Silent videos get an empty transcript and no analysis.
 
 Caption, author, likes and comments are read from Instagram's page data when a Reel is downloaded, so they stay empty until then and are a snapshot of that moment. Jobs are kept in memory and are lost on restart; the database and files persist. Transcription and analysis are not part of the API yet.
+
+### Chat UI
+
+`client/` is a React (Vite) app with a minimal white chat page for the food-spot chatbot. Each recommended place appears as a card with its details and its Instagram Reel link, plus a **Preview** button that embeds the Reel inline (Instagram may refuse to render the embed for some Reels; the link always works).
+
+```sh
+cd client
+npm install        # first time only
+npm run dev        # http://127.0.0.1:5173
+```
+
+Start the API first (`venv/bin/python -m uvicorn app.main:app --reload` from the project root). In development Vite forwards `/api/...` to `http://127.0.0.1:8000`, so no CORS setup is needed. To point the page at another API address, set `VITE_API_URL` (for example in `client/.env.local`). `npm run build` writes a static build to `client/dist`; it must be served from somewhere that can reach the API at `VITE_API_URL`.
 
 ## Current status
 

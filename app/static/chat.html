@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GraphGhost Food Spots</title>
+  <style>
+    :root { --bg: #fafaf7; --panel: #ffffff; --text: #1f2328; --muted: #656d76;
+            --line: #d8dee4; --accent: #c2410c; --user: #fde8d8; }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg: #14161a; --panel: #1c1f24; --text: #e6e8eb; --muted: #9aa4af;
+              --line: #2e333a; --accent: #fb923c; --user: #3a2a1c; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text);
+           font: 16px/1.5 system-ui, sans-serif; }
+    main { max-width: 720px; margin: 0 auto; padding: 16px; min-height: 100vh;
+           display: flex; flex-direction: column; }
+    h1 { font-size: 1.2rem; margin: 8px 0 16px; }
+    #log { flex: 1; display: flex; flex-direction: column; gap: 12px; }
+    .msg { padding: 10px 14px; border-radius: 12px; max-width: 92%;
+           white-space: pre-wrap; word-wrap: break-word; }
+    .user { background: var(--user); align-self: flex-end; }
+    .bot { background: var(--panel); border: 1px solid var(--line); align-self: flex-start; }
+    .spot { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px;
+            margin-top: 10px; background: var(--bg); }
+    .spot h3 { margin: 0; font-size: 1rem; }
+    .spot .where { color: var(--muted); font-size: .9rem; }
+    .spot p { margin: 6px 0 0; font-size: .95rem; }
+    .spot a { color: var(--accent); font-weight: 600; }
+    .warn { color: var(--muted); font-size: .85rem; }
+    form { display: flex; gap: 8px; margin-top: 16px; position: sticky; bottom: 0;
+           padding: 8px 0; background: var(--bg); }
+    input { flex: 1; padding: 12px; font-size: 1rem; border-radius: 10px;
+            border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+    button { padding: 0 18px; font-size: 1rem; border: 0; border-radius: 10px;
+             background: var(--accent); color: #fff; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Food spots from your Reels</h1>
+  <div id="log">
+    <div class="msg bot">Ask for a food spot, for example: "Where can I eat a good burrito in Kochi?"</div>
+  </div>
+  <form id="form">
+    <input id="text" autocomplete="off" placeholder="Ask for a place or dish" required maxlength="1000">
+    <button id="send">Ask</button>
+  </form>
+</main>
+<script>
+  const log = document.getElementById("log");
+  const form = document.getElementById("form");
+  const text = document.getElementById("text");
+  const send = document.getElementById("send");
+  const history = [];
+
+  function add(className, content) {
+    const box = document.createElement("div");
+    box.className = "msg " + className;
+    if (typeof content === "string") box.textContent = content;
+    else box.append(content);
+    log.append(box);
+    box.scrollIntoView({ block: "end" });
+    return box;
+  }
+
+  function spotCard(spot) {
+    const card = document.createElement("div");
+    card.className = "spot";
+    const title = document.createElement("h3");
+    title.textContent = spot.restaurant_name || "Unnamed spot";
+    card.append(title);
+
+    const place = spot.places.map(p => [p.locality || p.location_name, p.district]
+      .filter(Boolean).join(", ")).find(Boolean);
+    if (place) { const w = document.createElement("div"); w.className = "where"; w.textContent = place; card.append(w); }
+
+    const lines = [];
+    if (spot.food_items.length) lines.push("Food: " + spot.food_items.join(", "));
+    if (spot.price_information) lines.push("Price: " + (typeof spot.price_information === "string"
+      ? spot.price_information : JSON.stringify(spot.price_information)));
+    if (spot.reason) lines.push("Why: " + spot.reason);
+    for (const line of lines) { const p = document.createElement("p"); p.textContent = line; card.append(p); }
+
+    if (spot.needs_verification) {
+      const n = document.createElement("p"); n.className = "warn";
+      n.textContent = "Details need verification"; card.append(n);
+    }
+    const link = document.createElement("a");
+    link.href = spot.url; link.target = "_blank"; link.rel = "noopener noreferrer";
+    link.textContent = spot.url;
+    const p = document.createElement("p"); p.append("Reel: ", link); card.append(p);
+    return card;
+  }
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const message = text.value.trim();
+    if (!message) return;
+    add("user", message);
+    text.value = "";
+    send.disabled = true;
+    const pending = add("bot", "Looking...");
+    try {
+      const response = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, history: history.slice(-6) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.detail || "Request failed");
+
+      const wrapper = document.createElement("div");
+      wrapper.append(data.answer);
+      data.spots.forEach(spot => wrapper.append(spotCard(spot)));
+      pending.replaceChildren(wrapper);
+      history.push({ role: "user", content: message }, { role: "assistant", content: data.answer });
+    } catch (error) {
+      pending.textContent = "Sorry, that failed: " + error.message;
+    } finally {
+      send.disabled = false;
+      text.focus();
+    }
+  });
+</script>
+</body>
+</html>
